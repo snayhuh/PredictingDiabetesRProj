@@ -1,15 +1,25 @@
 # DigitalCorpsApp
-BASIC REQUIREMENTS:  Have IT-related experience demonstrating EACH of the five competencies listed below:
+BASIC REQUIREMENTS:  
+Have IT-related experience demonstrating EACH of the five competencies listed below:
+
 •	Data Preparation - Collects, wrangles, and prepares data for analysis from disparate sources, using scripting languages. Facilitates work with IT staff to develop and deploy automated and scalable processes. 
+
 •	Data Analysis and Reporting - Performs applicable statistical analysis and modeling to pull meaningful insights. Produces data visualizations, summaries, and reports. Provides recommendations on analytical approaches, tools, and architectures.
+
 •	Applied Data Science - Enhances products, services, and systems with design and development of data science projects to support business needs and operations. Ensures long-term sustainability and continuity of projects through documentation and engineering best practices.
+
 •	Problem Solving - Uses sound judgment and creativity to apply technical knowledge, methodologies, and tools in order to recommend and/or develop new solutions for organizational problems. Able to collaborate with others to resolve challenges, come up with solutions, and make progress using empathy, situational awareness, and tact.
+
 •	Communication- Explains in-depth or technical concepts using oral, written, and visual mediums, and in ways that different types of audiences can understand. Presents findings, recommendations, and alternatives to help others make a decision or understand the value of organizational IT needs. Communicates relevant project considerations and updates such as risks, estimates, and dependencies, within a team and across stakeholder groups.
 
-Examples of specialized experience include 
+Examples of specialized experience include
+
 •	Experience that demonstrates the ability to utilize data analysis and data science knowledge and methods to solve business problems from concept to delivery
+
 •	Collect, wrangle, and prepare data using scripting languages
+
 •	Apply appropriate analytical techniques and tools to produce data visualizations; summaries, reports, effectively document code for reproducibility
+
 •	Communicate technical information including information about analytical methods and outcomes in ways that different types of audiences can understand.
 
 Assessment prompts 
