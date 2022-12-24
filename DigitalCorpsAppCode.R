@@ -1,5 +1,5 @@
 ### Importing libraries 
-library(dplyr)
+library(dplyr, warn.conflicts = FALSE)
 library(tidyr)
 library(tidyverse)
 library(tidylog, warn.conflicts = FALSE)
@@ -61,7 +61,7 @@ data3 <- data2 %>%
                                  sleptim1 = c(77, 99), 
                                  menthlth = c(77, 99), 
                                  diabete3 = c(7, 9), 
-                                 race = c(7, 9), 
+                                 race = c(6, 9), 
                                  flushot6 = c(7, 9), 
                                  employ1 = 9, 
                                  marital = 9, 
@@ -92,6 +92,7 @@ data3_cleanweight1 <- data3 %>%
       TRUE ~ weight2
     )) %>%
   select(-weight2)
+  
 sum(is.na(data3_cleanweight1$weight_correct))
 
 data3_cleanweight1$state <- fips(data3_cleanweight1$state, to="Abbreviation")
@@ -101,8 +102,7 @@ uniqueidcheck <- data3_cleanweight1 %>%
   group_by(personid) %>% 
   mutate(duplicate_name = n()-1)
 
-data4 <- data3_cleanweight1
-vis_dat(data4)
+vis_dat(data3_cleanweight1)
 ## After cleaning, numadult, drvisits, income2, mscode, hlthcvr1 are all very missing and I'd like to avoid using these variables 
 
 ## Work on describe the dataset and its basic characteristics (e.g., shape, variable types, basic stats)
@@ -110,19 +110,65 @@ vis_dat(data4)
 ## Continuous variables: NUMADULT	CHILDREN	WEIGHT2	DRVISITS
 ## Ordinal variables: GENHLTH	_AGEG5YR	_BMI5CAT	CHECKUP1	INCOME2	_EDUCAG	SLEPTIM1	MENTHLTH	_SMOKER3 
 ## Categorical variables: DIABETE3	_RACE	MSCODE	FLUSHOT6	EMPLOY1	SEX	MARITAL	CVDCRHD4	HLTHCVR1	CHCKIDNY	USEEQUIP	_TOTINDA	ADDEPEV2	RENTHOM1	EXERANY2	BLIND	DECIDE	HLTHPLN1	DIABETE3	_STATE	ASTHMA3	MARITAL
-summary(data3$numadult) # Mean age is 7.8, around 54-55
-summary(data3$children)
-summary(data3_cleanweight1$weight_correct)
-summary(data3_cleanweight1$drvisits)
-summary(data3_cleanweight1$genhlth)
-table(data3_cleanweight1$asthma3)
+
 ## Going to first choose models and covariates and stuff then come back to this to determine what data things need a high level overview 
 ## BUT everything is cleaned up which is nice!
 
-
 ## Choosing variables: 
-## Social determinants of diabetes: 
-## Medical determinants of diabetes: 
+## Demographic 
+##### BMI- bmi5cat
+##### Age - ageg5yr
+##### Gender - sex
+##### Race  - race 
+table(data4$race) ## going to weight these 
 
+## Social 
+##### Stress - menthlth
+##### Depression - addepev2
 
+## Lifestyle 
+##### Smoking - smoker3
+##### Physical exercise - totinda
+##### Sleep - sleptim1
 
+## It would be nice to include clinical factors such as skin thickness, blood pressure, and glucose levels 
+## But we don't have those, so we can include chronic heart conditions - cvdcrhd4, chckidny
+## Can also proxy for some of these using sleep 
+
+data4 <- data3_cleanweight1 %>%
+  select(state, personid, ageg5yr, bmi5cat, sex, race, 
+         addepev2, menthlth, cvdcrhd4, chckidny, 
+         totinda, smoker3, diabete3, sleptim1) %>%
+  filter(ageg5yr > 2) %>%
+  filter(diabete3 == 1 | diabete3 == 3) %>%
+  na.omit()
+  
+vis_dat(data4)
+
+data4_racebreakdown <- data4 %>%
+  group_by(race) %>%
+  mutate(Freq=n()) %>%
+  mutate(perc_total_respondents = Freq/3808*100) %>%
+  mutate(perc_population = case_when(race == 1 ~  77.5,
+                                     race == 2 ~ 13.2,
+                                     race == 3 ~ 1.2, 
+                                     race == 4 ~ 5.4, 
+                                     race == 5 ~ 0.2, 
+                                     race == 7 ~ 2.5, 
+                         TRUE~15.3)) %>%
+  ## Used https://www.census.gov/content/dam/Census/library/publications/2015/demo/p25-1143.pdf page 9
+  ## subtracted 2.1 from the hispanic because we have 17.4 percent hispanic and that is not ONLY hispanic
+  mutate(race_weight = perc_population/perc_total_respondents) %>%
+  ungroup()
+
+## Imputing would be nice but doesn't make a lot of sense given the variables we've selected because the most missing var is bmi and it is only at 6%
+## General rule of thumb is: Imputation works best when many variables are missing in small proportions such that a complete case analysis might render 60-30% completeness, 
+## but each variable is perhaps only missing 10% of its values. Because we dont meet that threshold, we will just drop all missing values 
+
+## But that means we can start modeling! 
+
+## Logistic regression	 
+
+## Neural network	
+
+## Linear SVM	
