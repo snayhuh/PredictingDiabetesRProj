@@ -174,15 +174,6 @@ mylogit <- glm(diabete3 ~., data = data4_sample, family = binomial(link = "logit
 summary(mylogit)
 anova(mylogit, test="Chisq")
 
-library(ROCR)
-p <- predict(mylogit, newdata=subset(test,select=c(2,3,4,5,6,7,8)), type="response")
-pr <- prediction(p, test$Survived)
-prf <- performance(pr, measure = "tpr", x.measure = "fpr")
-plot(prf)
-auc <- performance(pr, measure = "auc")
-auc <- auc@y.values[[1]]
-auc
-
 
 ## Neural network	
 
