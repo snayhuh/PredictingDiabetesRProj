@@ -145,7 +145,7 @@ data4 <- data3_cleanweight1 %>%
   
 vis_dat(data4)
 
-data4_racebreakdown <- data4 %>%
+data4_sample <- data4 %>%
   group_by(race) %>%
   mutate(Freq=n()) %>%
   mutate(perc_total_respondents = Freq/3808*100) %>%
@@ -159,6 +159,7 @@ data4_racebreakdown <- data4 %>%
   ## Used https://www.census.gov/content/dam/Census/library/publications/2015/demo/p25-1143.pdf page 9
   ## subtracted 2.1 from the hispanic because we have 17.4 percent hispanic and that is not ONLY hispanic
   mutate(race_weight = perc_population/perc_total_respondents) %>%
+  select(-c(perc_population, perc_total_respondents, Freq)) %>%
   ungroup()
 
 ## Imputing would be nice but doesn't make a lot of sense given the variables we've selected because the most missing var is bmi and it is only at 6%
@@ -168,6 +169,20 @@ data4_racebreakdown <- data4 %>%
 ## But that means we can start modeling! 
 
 ## Logistic regression	 
+data4_sample$diabete3 <- factor(data4_sample$diabete3)
+mylogit <- glm(diabete3 ~., data = data4_sample, family = binomial(link = "logit"), weights = c(race_weight, ))
+summary(mylogit)
+anova(mylogit, test="Chisq")
+
+library(ROCR)
+p <- predict(mylogit, newdata=subset(test,select=c(2,3,4,5,6,7,8)), type="response")
+pr <- prediction(p, test$Survived)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf)
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+
 
 ## Neural network	
 
