@@ -136,11 +136,13 @@ table(data4$race) ## going to weight these
 ## Can also proxy for some of these using sleep 
 
 data4 <- data3_cleanweight1 %>%
-  select(state, personid, ageg5yr, bmi5cat, sex, race, 
+  select(personid, ageg5yr, bmi5cat, sex, race, 
          addepev2, menthlth, cvdcrhd4, chckidny, 
          totinda, smoker3, diabete3, sleptim1) %>%
   filter(ageg5yr > 2) %>%
   filter(diabete3 == 1 | diabete3 == 3) %>%
+  mutate(diabete3 = case_when(diabete3 == 3 ~ 0, 
+         TRUE ~ 1)) %>%
   na.omit()
   
 vis_dat(data4)
@@ -170,10 +172,20 @@ data4_sample <- data4 %>%
 
 ## Logistic regression	 
 data4_sample$diabete3 <- factor(data4_sample$diabete3)
-mylogit <- glm(diabete3 ~., data = data4_sample, family = binomial(link = "logit"), weights = c(race_weight, ))
+data4_sample$race <- factor(data4_sample$race)
+data4_sample$sex <- factor(data4_sample$sex)
+data4_sample$ageg5yr <- factor(data4_sample$ageg5yr)
+data4_sample$bmi5cat <- factor(data4_sample$bmi5cat)
+data4_sample$smoker3 <- factor(data4_sample$smoker3)
+data4_sample$addepev2 <- factor(data4_sample$addepev2)
+data4_sample$cvdcrhd4 <- factor(data4_sample$cvdcrhd4)
+data4_sample$chckidny <- factor(data4_sample$chckidny)
+data4_sample$totinda <- factor(data4_sample$totinda)
+
+mylogit <- glm(diabete3 ~., data = data4_sample, family = binomial(link = "logit"), 
+               weights = race_weight)
 summary(mylogit)
 anova(mylogit, test="Chisq")
-
 
 ## Neural network	
 
