@@ -27,6 +27,6 @@ Assessment prompts
 2.	Choose several variables and create visualizations to show their distributions. Justify your variable selection.  
 3.	Clean the dataset to handle any missing data and justify your decisions.  
 4.	For building a model, would you rescale any data in this dataset? How and why or  why not?  
-5.	Build a model to identify risk factors for diabetes. Explain your choice of model and  what it can predict. What metrics would you use to assess performance? For this  dataset, how would you know your model is adequate?  
+5.	Build a model to identify risk factors for diabetes. Explain your choice of model and  what it can predict. What metrics would you use to assess performance? For this dataset, how would you know your model is adequate?  
 6.	Using these data, what are some identifiable risk factors for diabetes? How do you  know? Explain as if you were reporting the results to a non-technical stakeholder.  
 
