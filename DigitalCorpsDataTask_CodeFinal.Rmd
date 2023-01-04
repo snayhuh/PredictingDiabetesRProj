@@ -1,0 +1,417 @@
+---
+title: "United States Digital Corps Project-Based Assessment"
+subtitle: "Track: Data Science"
+output: html_document
+---
+
+```{r setup, results='hide'}
+knitr::opts_chunk$set(echo = TRUE)
+### Importing libraries 
+library(dplyr, warn.conflicts = FALSE)
+library(tidyr)
+library(tidyverse)
+library(tidylog, warn.conflicts = FALSE)
+library(visdat)
+library(naniar)
+library(cdlTools)
+library(pROC)
+library(caret)
+library(e1071)
+library(Boruta)
+library(Rcpp)
+library(randomForest)
+library(ROSE)
+library(ggcorrplot)
+library(party)
+library(gridExtra)
+```
+# Section 1: Cleaning/EDA
+## Importing and Merging Data 
+```{r}
+numeric <- read_csv("Data/data_numeric.csv", show_col_types = T)
+spec(numeric)
+categorical <- read_csv("Data/data_categorical.csv", show_col_types = T)
+spec(categorical)
+ordinal <- read_csv("Data/data_ordinal.csv", show_col_types = T)
+spec(ordinal)
+
+num_ord <- left_join(numeric, ordinal, "PERSONID")
+num_ord_cat <- left_join(num_ord, categorical, "PERSONID")
+spec(num_ord_cat)
+```
+# Section 2: Cleaning and quality-checking data 
+## Run data quality checks on columns that look to be identical
+```{r}
+data1 <- num_ord_cat %>%
+  select(starts_with("DIABET") | starts_with("MARITAL")) %>%
+  mutate(DIABET3_diff = ifelse(DIABETE3.x == DIABETE3.y & 
+                                 DIABETE3.x == `DIABETE3...2` &
+                                 DIABETE3.x == `DIABETE3...20`, 0, 1)) %>%
+  ## There are 10 NA values in the marital difference variable-- want to see if they are missing for the same observations
+  mutate(MARITAL_DIFF = ifelse((`MARITAL...8` == `MARITAL...23`) | 
+                                 (is.na(`MARITAL...8`) & is.na(`MARITAL...23`)), 0 ,1)) 
+
+```
+## Take out duplicate columns and clean up variable names using janitor
+```{r}
+data2 <- num_ord_cat %>%
+  select(-c(DIABETE3.y, `DIABETE3...2`, `DIABETE3...20`, `MARITAL...8`)) %>%
+  janitor::clean_names()
+
+```
+## Account for NA and 0 values in data as provided by data documentation
+```{r}
+data3 <- data2 %>%
+  replace_with_na(replace = list(weight2 = c(9999, 7777),
+                                 children = 99, 
+                                 drvisits = c(77, 99),
+                                 income2 = c(77, 99),
+                                 checkup1 = c(7, 9), 
+                                 sleptim1 = c(77, 99), 
+                                 menthlth = c(77, 99), 
+                                 diabete3_x = c(7, 9), 
+                                 race = c(6, 9), 
+                                 flushot6 = c(7, 9), 
+                                 employ1 = 9, 
+                                 marital_23 = 9, 
+                                 cvdcrhd4 = c(7, 9), 
+                                 hlthcvr1 = c(77, 99), 
+                                 chckidny = c(7, 9), 
+                                 useequip = c(7, 9),
+                                 totinda = 9, 
+                                 addepev2 = c(7, 9),
+                                 renthom1 = c(7, 9),
+                                 exerany2 = c(7, 9),
+                                 blind = c(7, 9),
+                                 decide = c(7, 9),
+                                 hlthpln1 = c(7, 9), 
+                                 genhlth = c(7, 9), 
+                                 asthma3 = c(7, 9)))%>%
+  mutate(children = replace(children, children == 88, 0)) %>%
+  mutate(drvisits = replace(drvisits, drvisits == 88, 0)) %>%
+  mutate(menthlth = replace(menthlth, menthlth == 88, 0)) %>%
+  mutate(checkup1 = replace(checkup1, checkup1 == 88, 0)) %>%
+  mutate(marital = marital_23) %>%
+  mutate(diabete3 = diabete3_x) %>%
+  select(-c(marital_23, diabete3_x))
+```
+## The documentation specifies that some weight values are in kilograms-- convert all of them to pounds 
+```{r}
+data3_cleanweight1 <- data3 %>%
+  mutate(
+    weight_correct = case_when(
+      nchar(as.character(weight2))==4 ~ as.numeric(str_sub(weight2, -3)) * 2.20462,
+      TRUE ~ weight2
+    )) %>%
+  select(-weight2)
+```
+
+## Check for unique ID's 
+```{r}
+uniqueidcheck <- data3_cleanweight1 %>% 
+  group_by(personid) %>% 
+  mutate(duplicate_name = n()-1)
+# All ID's are unique! 
+```
+## Check missingness of data using vis_dat-- sorts columns according to types of data
+```{r}
+vis_dat(data3_cleanweight1)
+```
+
+## Omit variables with most missingness as indicated by visualization above 
+### Given the data we have, we are interested in predicting cases of type 2 diabetes and assume that diabete3 captures type 2. Type 1 diabetes is a genetic condition that often shows up early in life, and type 2 is mainly lifestyle-related and develops over time. 
+```{r}
+data4 <- data3_cleanweight1 %>%
+  select(-c(numadult, drvisits, mscode, income2, hlthcvr1)) %>%
+  filter(ageg5yr > 2) %>%
+# The US Preventative Service Task Force recommends that screenings for diabetes should start at age 35, so we only include individuals 35 or older.  
+  filter(diabete3 == 1 | diabete3 == 3) %>%
+#We are not interested in anyone with gestational diabetes or prediabetic individuals because they are not official diabetes diagnoses. Even if we were interested in keeping gestational diabetes or prediabetes as covariates, we could not use them because it is unknown of those respondents have type 2 diagnoses later. 
+  mutate(diabete3 = case_when(diabete3 == 3 ~ 0, 
+         TRUE ~ 1)) %>%
+  na.omit()
+# After this modification, we have 3609 observations
+```
+## Check racial breakdown of data and assess if it is representative of nation
+```{r}
+data4_sample <- data4 %>%
+  group_by(race) %>%
+  mutate(Freq=n()) %>%
+  mutate(perc_total_respondents = Freq/3808*100) %>%
+  # Compare perc_total_respondents with actual national racial breakdown using https://www.census.gov/content/dam/Census/library/publications/2015/demo/p25-1143.pdf page 9
+  # There are a disproportionate number of white respondents, which could potentially skew the sample 
+  # We use weights to fix for heteroskedasticity AFTER establishing the training and test models because the representative-ness will change based on the random sample
+  ungroup()
+```
+# The following variables are categorical or ordinal. We need to convert the following objects to factors to represent that. 
+```{r, results='hide'}
+data4_sample$diabete3 <- factor(data4_sample$diabete3)
+data4_sample$race <- factor(data4_sample$race)
+data4_sample$sex <- factor(data4_sample$sex)
+data4_sample$ageg5yr <- factor(data4_sample$ageg5yr)
+data4_sample$bmi5cat <- factor(data4_sample$bmi5cat)
+data4_sample$smoker3 <- factor(data4_sample$smoker3)
+data4_sample$addepev2 <- factor(data4_sample$addepev2)
+data4_sample$cvdcrhd4 <- factor(data4_sample$cvdcrhd4)
+data4_sample$chckidny <- factor(data4_sample$chckidny)
+data4_sample$totinda <- factor(data4_sample$totinda)
+data4_sample$genhlth <- factor(data4_sample$genhlth)
+data4_sample$employ1 <- factor(data4_sample$employ1)
+data4_sample$useequip <- factor(data4_sample$useequip)
+data4_sample$asthma3 <- factor(data4_sample$asthma3)
+data4_sample$hlthpln1 <- factor(data4_sample$hlthpln1)
+data4_sample$decide <- factor(data4_sample$decide)
+data4_sample$blind <- factor(data4_sample$blind)
+data4_sample$exerany2 <- factor(data4_sample$exerany2)
+
+```
+# Before we start modeling, let's check the distribution of diabetes 
+```{r}
+prop.table(table(data4_sample$diabete3))
+```
+##### Given the result above, I considered over and undersampling the data because of the 86/14 split on no diabetes/diabetes and was worried that the imbalance would skew the model. However, I decided against it for the following reasons: 
+###### According to the National Diabetes Statistics Report (2014), 9.3% of the U.S. population has diabetes, meaning that we are not necessarily aiming for a 50/50 split and our sample is relatively representative of the US. Of the 9.3%, 27.8% are undiagnosed which our model aims to solve for. Because we are interested in accurate prediction and I believe the data is representative, we do not have to correct.
+###### There is a large risk of overfitting in the over-sampled model
+###### Under-sampling would reduce the sample and undermine its effectiveness 
+###### The usefulness (AUC value) of the over, under, and non-sampled models would remain the same (or be very close to each other). This is because changing the class ratio only affects the intercept of a standard logistic regression model. It is a monotonic transformation of the log-odds. This also represents a monotonic function of the predicted probability values. Monotonic functions preserve order, and AUC stays the same with order meaning the AUC does not change.
+###### With our size sample, we have more than 600 observations in our minority class. Given that we can typically fit about 1 parameter per 15 members of the minority class without overfitting, we have enough flexibility in the sample. 
+
+# Section 3.1: Model Selection: 
+## Use the Boruta algorithm to see what variables are relevant in the data. Based on the earlier visualization, we omit numadult, drvisits, mscode, income2, and hlthcvr1 because they are largely missing from the data and we will not use them as predictors because of that.
+## Boruta generally is a good 
+```{r, results='hide'}
+boruta_data <- data4_sample %>%
+  select(-c(Freq, perc_total_respondents, personid,weight_correct))
+#Omit varialbes that we don't intend on using in our model
+boruta.train <- Boruta(diabete3~., data = boruta_data)
+# Confirmed, non-tentative: The following variables are predictive and should be kept.
+# children, genhlth, ageg5yr,bmi5cat, educag, sleptim1, menthlth, race, employ1, cvdcrhd4, chckidny, useequip, addepev2, exerany2, decide, marital, sex
+# Tentative. The algorithm was indecisive about if these are predictive. It is up to us to include. 
+# checkup1, smoker3, totinda
+```
+
+## Create correlation plot for selected variables 
+```{r}
+model.matrix(~0+.-Freq-perc_total_respondents-personid-state, data=data4_sample) %>% 
+     cor(use="pairwise.complete.obs") %>% 
+     ggcorrplot(show.diag = F, type="lower", lab=TRUE, lab_size=2)
+# Given the figure, omit totinda 
+# No physical activity in the past 30 days is 100% correlated with no physical exercise in the past 30 days. Because totinda is a tentative attribute according to the Boruta algorithm, we opt to use exerany. 
+
+```
+
+
+
+
+
+
+
+
+# Section 3.2: Look into all of the variables specified by Boruta: 
+```{r}
+children_hist <- ggplot(data4_sample, aes(x=children)) + geom_histogram()
+genhlth_hist <- ggplot(data4_sample, aes(x=genhlth)) + geom_bar()
+ageg5yr_hist <- ggplot(data4_sample, aes(x=ageg5yr)) + geom_bar()
+bmi5cat_hist <- ggplot(data4_sample, aes(x=bmi5cat)) + geom_bar()
+checkup_hist <- ggplot(data4_sample, aes(x=checkup1)) + geom_bar()
+educag_hist <- ggplot(data4_sample, aes(x=educag)) + geom_bar()+
+  scale_x_discrete(breaks=c(1, 2, 3, 4, 5, 6, 7, 8, 9))
+sleptim_hist <- ggplot(data4_sample, aes(x=sleptim1)) + geom_histogram()
+menthlth_hist <- ggplot(data4_sample, aes(x=menthlth)) + geom_histogram(bins=45)
+employ1_hist <- ggplot(data4_sample, aes(x=employ1)) + geom_bar()
+cvdcrhd4_table <- table(data4_sample$cvdcrhd4)
+chckidny_table <- table(data4_sample$chckidny)
+useequip_table <- table(data4_sample$useequip)
+addepev2_table <- table(data4_sample$addepev2)
+exerany_table <- table(data4_sample$exerany2)
+decide_table <- table(data4_sample$decide)
+marital_hist <- ggplot(data4_sample, aes(x=marital)) + geom_bar()
+sex_table <- table(data4_sample$sex)
+smoker3_hist <- ggplot(data4_sample, aes(x=smoker3)) + geom_bar()
+totinda_table <- table(data4_sample$totinda)
+
+
+grid.arrange(children_hist, genhlth_hist, ageg5yr_hist, bmi5cat_hist, checkup_hist, educag_hist, sleptim_hist, menthlth_hist,employ1_hist, marital_hist, smoker3_hist, ncol=3, nrow =4)
+
+```
+
+
+
+
+
+
+
+
+
+# Section 3.3: Split the data into training and test sets before adjusting the samples. 
+## We use the training data to test and validate the model then treat the test dataset as new data to evaluate how effective the model is. We will adjust the racial representative-ness of the sample in the training data. When we split the data into training and test sets, the data is randomly divided, meaning the training and/or test sets may have the same racial split as the lar
+```{r}
+train <- data4_sample %>% 
+  dplyr::sample_frac(0.75) %>%
+  group_by(race) %>%
+  mutate(perc_population = case_when(race == 1 ~  77.5,
+                                     race == 2 ~ 13.2,
+                                     race == 3 ~ 1.2, 
+                                     race == 4 ~ 5.4, 
+                                     race == 5 ~ 0.2, 
+                                     race == 7 ~ 2.5, 
+                         TRUE~15.3)) %>%
+  ## Used https://www.census.gov/content/dam/Census/library/publications/2015/demo/p25-1143.pdf page 9
+  ## subtracted 2.1 from the hispanic because we have 17.4 percent hispanic and that is not ONLY hispanic
+  mutate(race_weight = perc_population/perc_total_respondents) %>%
+  select(-c(perc_population, perc_total_respondents, Freq)) %>%
+  ungroup()
+prop.table(table(train$diabete3))
+
+# Creating test sample-- still need to create a racially representative sample here as well before testing the model we created
+test  <- dplyr::anti_join(data4_sample, train, by = 'personid') %>%
+  group_by(race) %>%
+  mutate(Freq=n()) %>%
+  mutate(perc_total_respondents = Freq/3808*100) %>%
+  mutate(perc_population = case_when(race == 1 ~  77.5,
+                                     race == 2 ~ 13.2,
+                                     race == 3 ~ 1.2, 
+                                     race == 4 ~ 5.4, 
+                                     race == 5 ~ 0.2, 
+                                     race == 7 ~ 2.5, 
+                         TRUE~15.3)) %>%
+  # Used https://www.census.gov/content/dam/Census/library/publications/2015/demo/p25-1143.pdf page 9
+  # subtracted 2.1 from the hispanic because we have 17.4 percent hispanic and that is not ONLY hispanic
+  mutate(race_weight = perc_population/perc_total_respondents) %>%
+  select(-c(perc_population, perc_total_respondents, Freq)) %>%
+  ungroup()
+prop.table(table(test$diabete3))
+```
+# Section 4: Deploying the logit model 
+## Now that we have the following: 
+### Clean data
+### Training/test sets,
+## We can use a logit model to predict if someone will be diagnosed with diabetes.
+## Run the regression and examine the results 
+```{r, results='hide'}
+mylogit <- glm(diabete3 ~children+genhlth+ageg5yr+bmi5cat+checkup1+educag+sleptim1+menthlth+race+employ1+cvdcrhd4+chckidny+useequip+addepev2+exerany2+decide+marital+sex+smoker3, data = train, family = binomial(link = "logit"), weights = race_weight)
+
+anova_logit <- anova(mylogit, test="Chisq")
+# Use a chi-squared test because we have a lot of categorical and ordinal variables. The p values we have in the regression output correspond to individual Wald tests, but those p values do not tell us if the entire categorical/ordinal variable) explains the probability of getting diabetes. We have to test the coefficients together, so we perform a deviance goodness of fit test. 
+```
+## View regression output
+```{r}
+summary(mylogit)
+
+anova_logit
+# How to interpret this test: rejecting the null means the reduction in deviance is larger than one would expect if a variable did not explain anything about the outcome
+```
+## Section 4.1: Make predictions using test data
+```{r}
+probabilities <- mylogit %>% predict(test, type = "response")
+# The result is continuous values of probabilities of diabetes occurrence, but we are interested in predicting if someone will have diabetes or not. If anyone has a probability above 50%, we assume that they will be diagnosed with diabetes.
+predicted_classes <- ifelse(probabilities > 0.5, 1, 0)
+```
+## Section 4.2: Evaluate the model by creating a confusion matrix 
+```{r, }
+# Take the predictions and append as a column to the test dataframe to create a confusion matrix
+# Do do that, we must first converting predicted classes to a dataframe
+predicted_classes_logit <- as.data.frame(predicted_classes)
+test_predicted_logit <- cbind(predicted_classes_logit, test) 
+logitconfusionmatrix <-confusionMatrix(data=as.factor(test_predicted_logit$predicted_classes), reference=as.factor(test_predicted_logit$diabete3))
+```
+```{r}
+logitconfusionmatrix
+```
+## Section 4.3: Create ROC Curve to calculate the performance of the classification model
+```{r}
+roc_object <- roc(test$diabete3, probabilities)
+# Calculate area under curve, the closer this is to 1 the more useful the model is
+auc_logit <- auc(roc_object) 
+auc_logit
+```
+# Section 5: Decision trees 
+```{r}
+decisiontree <- ctree(diabete3 ~children+genhlth+ageg5yr+bmi5cat+checkup1+educag+sleptim1+menthlth+race+employ1+cvdcrhd4+chckidny+useequip+addepev2+exerany2+decide+marital+sex+smoker3, data = train)
+plot(decisiontree)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Section 5.1: Make predictions using test data
+```{r}
+predict_model<-predict(decisiontree, test)
+```
+## Section 5.2: Evaluate the model by creating a confusion matrix 
+```{r}
+predicted_classes_decisiontree <- as.data.frame(predict_model)
+test_predicted_decisiontree <- cbind(predicted_classes_decisiontree, test) 
+
+decisiontree_confusionmatrix<-confusionMatrix(data=test_predicted_decisiontree$predict_model, reference=test_predicted_decisiontree$diabete3)
+```
+```{r}
+decisiontree_confusionmatrix
+```
+## Section 5.3: Create ROC Curve to calculate the performance of the classification model
+```{r}
+predict_model <- as.numeric(predict_model)
+roc_object_decisiontree <- roc(test$diabete3, predict_model)
+# Calculate area under curve, the closer this is to 1 the more useful the model is
+auc_decisiontree <- auc(roc_object_decisiontree) 
+auc_decisiontree
+```
+# Section 6: Random Forests
+```{r}
+rf <- randomForest(diabete3 ~children+genhlth+ageg5yr+bmi5cat+checkup1+educag+sleptim1+menthlth+race+employ1+cvdcrhd4+chckidny+useequip+addepev2+exerany2+decide+marital+sex+smoker3, data=train, proximity=TRUE, ntree=500) 
+plot(rf)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Section 6.1: Make predictions using test data
+```{r}
+pred_randomforest_test <- predict(rf, newdata = test, type= "class")
+```
+## Section 6.2: Evaluate the model by creating a confusion matrix 
+```{r}
+test_predicted_randomforest <- cbind(pred_randomforest_test, test) 
+
+confusionmatrixRandomForest <- confusionMatrix(data=as.factor(test_predicted_randomforest$pred_randomforest_test), 
+                                               reference=as.factor(test_predicted_randomforest$diabete3))
+```
+```{r}
+confusionmatrixRandomForest
+```
+## Section 6.3: Create ROC Curve to calculate the performance of the classification model
+```{r}
+pred_randomforest_test <-  as.numeric(pred_randomforest_test)
+# create roc curve
+roc_object_randomforests <- roc(test$diabete3, pred_randomforest_test)
+# calculate area under curve
+auc_randomforests <- auc(roc_object_randomforests)
+auc_randomforests
+```
+
+
+

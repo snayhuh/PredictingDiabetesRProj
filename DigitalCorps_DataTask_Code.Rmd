@@ -15,57 +15,43 @@ library(naniar)
 library(cdlTools)
 library(pROC)
 library(caret)
+library(e1071)
+library(Boruta)
+library(Rcpp)
+library(randomForest)
+library(ROSE)
+library(rpart)
+library(ggcorrplot)
 ```
-
+# Section 1: Cleaning/EDA
 # Importing and Merging Data 
-```{r,results='hide'}
-# Importing datasets 
-numeric <- read_csv("/Users/snerbs/Desktop/DigitalCorpsDataTest/data_numeric.csv")
-categorical <- read_csv("/Users/snerbs/Desktop/DigitalCorpsDataTest/data_categorical.csv")
-### We have a warning here for duplicated column names (diabetes and marital-- look into these columns)
-ordinal <- read_csv("/Users/snerbs/Desktop/DigitalCorpsDataTest/data_ordinal.csv")
+```{r, results='hide'}
+numeric <- read_csv("Data/data_numeric.csv")
+categorical <- read_csv("Data/data_categorical.csv")
+ordinal <- read_csv("Data/data_ordinal.csv")
 
 num_ord <- left_join(numeric, ordinal, "PERSONID")
 num_ord_cat <- left_join(num_ord, categorical, "PERSONID")
 ```
-# Importing and Merging Data 
-```{r,results='hide'}
+# Run data quality checks on columns that look to be identical
+```{r, results='hide'}
 data1 <- num_ord_cat %>%
   select(starts_with("DIABET") | starts_with("MARITAL")) %>%
   mutate(DIABET3_diff = ifelse(DIABETE3.x == DIABETE3.y & 
-                                 DIABETE3.x == DIABETE3 &
-                                 DIABETE3.x == DIABETE3_1, 0, 1)) %>%
-  ## There are 10 NA values in the marital difference variable-- want to see if they are missing for the same observations
-  mutate(MARITAL_DIFF = ifelse((MARITAL == MARITAL_1) | 
-                                 (is.na(MARITAL) & is.na(MARITAL_1)), 0 ,1)) 
-
-## check the difference variable 
-summary(data1$DIABET3_diff)
-summary(data1$MARITAL_DIFF)
-
+                                 DIABETE3.x == `DIABETE3...2` &
+                                 DIABETE3.x == `DIABETE3...20`, 0, 1)) %>%
+  mutate(MARITAL_DIFF = ifelse((`MARITAL...8` == `MARITAL...23`) | 
+                                 (is.na(`MARITAL...8`) & is.na(`MARITAL...23`)), 0 ,1)) 
+```
+# Take out duplicate columns and clean up variable names using janitor
+```{r, results='hide'}
 data2 <- num_ord_cat %>%
-  select(-c(DIABETE3.x, DIABETE3.y, DIABETE3_1, MARITAL_1)) %>%
+  select(-c(DIABETE3.y, `DIABETE3...2`, `DIABETE3...20`, `MARITAL...8`)) %>%
   janitor::clean_names()
 
-vis_dat(data2)
-## numadult, drvisits, mscode, and hlthcvr1 have a lot of missing values
-## Number of adults in a household, How many times have you been to a doctor, nurse, or other health professional in the past 12 months?, 
-## Metropolitan Status Code, What is the primary source of your health care coverage?
-## Want to avoid using these in the model and if I do use them then I'll have to do some imputation 
-## Can use Naniar to see if the missingness is random or if it is correlated with age, race, gender, diabetes prevalence, or any other variables of interest 
-
-## Downloading and merging is complete, now go to some exploration
-## Looking at the weight variable 
-## According to documentation, 9999 is refused to answer, so we can make those missing 
-sum(is.na(data2$weight2))
-## There are 50 values with missing weight 
-## Need to know if this is correlated to something else, hopefully they are not 
-## If they are, I might have to justify potentially dropping them or imputing the values 
-## Even if it is not correlated to something else then I can impute the values
-## Look at the distribution of weight 
-## Find closest matches among other columns and use the average 
-
-## Cleaning up the weight variable-- there are exactly seven observations that are in grams as seen by sorting the data by weight
+```
+# Account for NA and 0 values in data as provided by data documentation
+```{r, results='hide'}
 data3 <- data2 %>%
   replace_with_na(replace = list(weight2 = c(9999, 7777),
                                  children = 99, 
@@ -74,11 +60,11 @@ data3 <- data2 %>%
                                  checkup1 = c(7, 9), 
                                  sleptim1 = c(77, 99), 
                                  menthlth = c(77, 99), 
-                                 diabete3 = c(7, 9), 
+                                 diabete3_x = c(7, 9), 
                                  race = c(6, 9), 
                                  flushot6 = c(7, 9), 
                                  employ1 = 9, 
-                                 marital = 9, 
+                                 marital_23 = 9, 
                                  cvdcrhd4 = c(7, 9), 
                                  hlthcvr1 = c(77, 99), 
                                  chckidny = c(7, 9), 
@@ -95,10 +81,13 @@ data3 <- data2 %>%
   mutate(children = replace(children, children == 88, 0)) %>%
   mutate(drvisits = replace(drvisits, drvisits == 88, 0)) %>%
   mutate(menthlth = replace(menthlth, menthlth == 88, 0)) %>%
-  mutate(checkup1 = replace(checkup1, checkup1 == 88, 0))
-
-vis_dat(data3)
-
+  mutate(checkup1 = replace(checkup1, checkup1 == 88, 0)) %>%
+  mutate(marital = marital_23) %>%
+  mutate(diabete3 = diabete3_x) %>%
+  select(-c(marital_23, diabete3_x))
+```
+# The documentation specifies that some weight values are in kilograms-- convert all of them to pounds 
+```{r, results='hide'}
 data3_cleanweight1 <- data3 %>%
   mutate(
     weight_correct = case_when(
@@ -106,48 +95,47 @@ data3_cleanweight1 <- data3 %>%
       TRUE ~ weight2
     )) %>%
   select(-weight2)
-  
-sum(is.na(data3_cleanweight1$weight_correct))
-
+```
+# The data currently uses state fips codes instead of abbreviations. Abbreviations will make the data and results easier to interpret. 
+```{r, results='hide'}
 data3_cleanweight1$state <- fips(data3_cleanweight1$state, to="Abbreviation")
+```
 
-## Checking for unique ID's:
+# Check for unique ID's 
+```{r, results='hide'}
 uniqueidcheck <- data3_cleanweight1 %>% 
   group_by(personid) %>% 
   mutate(duplicate_name = n()-1)
+# All ID's are unique! 
+```
 
+# Check missingness of data using vis_dat-- sorts columns according to types of data
+```{r, results='hide'}
 vis_dat(data3_cleanweight1)
-## After cleaning, numadult, drvisits, income2, mscode, hlthcvr1 are all very missing and I'd like to avoid using these variables 
+```
 
-## Work on describe the dataset and its basic characteristics (e.g., shape, variable types, basic stats)
-## Before deciding on a model and relevant covariates we have 34 variables and 5000 individual ID's
-## Continuous variables: NUMADULT	CHILDREN	WEIGHT2	DRVISITS
-## Ordinal variables: GENHLTH	_AGEG5YR	_BMI5CAT	CHECKUP1	INCOME2	_EDUCAG	SLEPTIM1	MENTHLTH	_SMOKER3 
-## Categorical variables: DIABETE3	_RACE	MSCODE	FLUSHOT6	EMPLOY1	SEX	MARITAL	CVDCRHD4	HLTHCVR1	CHCKIDNY	USEEQUIP	_TOTINDA	ADDEPEV2	RENTHOM1	EXERANY2	BLIND	DECIDE	HLTHPLN1	DIABETE3	_STATE	ASTHMA3	MARITAL
-
-## Going to first choose models and covariates and stuff then come back to this to determine what data things need a high level overview 
-## BUT everything is cleaned up which is nice!
-
-## Choosing variables: 
-## Demographic 
+# Section 2: Model Selection 
+## Demographic Factors
 ##### BMI- bmi5cat
 ##### Age - ageg5yr
 ##### Gender - sex
 ##### Race  - race 
 
-## Social 
+## Social Factors
 ##### Stress - menthlth
 ##### Depression - addepev2
 
-## Lifestyle 
+## Lifestyle Factors
 ##### Smoking - smoker3
 ##### Physical exercise - totinda
 ##### Sleep - sleptim1
 
-## It would be nice to include clinical factors such as skin thickness, blood pressure, and glucose levels 
-## But we don't have those, so we can include chronic heart conditions - cvdcrhd4, chckidny
-## Can also proxy for some of these using sleep 
+## Medical History 
+##### Diagnosed with coronary heart disease or angina  - cvdcrhd4
+##### Ever told you have kidney disease - chckidny
 
+# Section 3: Preparing data for modeling
+```{r, results='hide'}
 data4 <- data3_cleanweight1 %>%
   select(personid, ageg5yr, bmi5cat, sex, race, 
          addepev2, menthlth, cvdcrhd4, chckidny, 
@@ -157,10 +145,41 @@ data4 <- data3_cleanweight1 %>%
   mutate(diabete3 = case_when(diabete3 == 3 ~ 0, 
          TRUE ~ 1)) %>%
   na.omit()
-  
-vis_dat(data4)
-
+```
+# Check racial breakdown of data and assess if it is representative of nation
+```{r, results='hide'}
 data4_sample <- data4 %>%
+  group_by(race) %>%
+  mutate(Freq=n()) %>%
+  mutate(perc_total_respondents = Freq/3808*100) %>%
+  # Compare perc_total_respondents with actual national racial breakdown using https://www.census.gov/content/dam/Census/library/publications/2015/demo/p25-1143.pdf page 9
+  # There are a disproportionate number of white respondents, which could potentially skew the sample 
+  # Let's use weights to fix for heteroskedasticity AFTER establishing the training and test models because the representative-ness will change based on the random sample
+  ungroup()
+```
+# The following variables are categorical or ordinal. We need to convert the following objects to factors to represent that. 
+```{r, results='hide'}
+data4_sample$diabete3 <- as.numeric(data4_sample$diabete3)
+data4_sample$race <- factor(data4_sample$race)
+data4_sample$sex <- factor(data4_sample$sex)
+data4_sample$ageg5yr <- factor(data4_sample$ageg5yr)
+data4_sample$bmi5cat <- factor(data4_sample$bmi5cat)
+data4_sample$smoker3 <- factor(data4_sample$smoker3)
+data4_sample$addepev2 <- factor(data4_sample$addepev2)
+data4_sample$cvdcrhd4 <- factor(data4_sample$cvdcrhd4)
+data4_sample$chckidny <- factor(data4_sample$chckidny)
+data4_sample$totinda <- factor(data4_sample$totinda)
+```
+# Before we start modeling, let's check the distribution of diabetes 
+```{r, results='hide'}
+prop.table(table(data4_sample$diabete3))
+# Only ~14% of the data captures individuals diagnosed with diabetes. When we're developing models, this imbalance will skew towards not being diagnosed with diabetes, which could lead to false results because does have enough data to learn about the minority.
+```
+
+# Split the data into training and test sets before adjusting the samples. We use the training data to test and validate the model then treat the test dataset as new data to evaluate how effective the model is. We will adjust the racial representative-ness of the sample in the training data. 
+```{r, results='hide'}
+train <- data4_sample %>% 
+  dplyr::sample_frac(0.75) %>%
   group_by(race) %>%
   mutate(Freq=n()) %>%
   mutate(perc_total_respondents = Freq/3808*100) %>%
@@ -176,48 +195,159 @@ data4_sample <- data4 %>%
   mutate(race_weight = perc_population/perc_total_respondents) %>%
   select(-c(perc_population, perc_total_respondents, Freq)) %>%
   ungroup()
-data4_sample$diabete3 <- as.numeric(data4_sample$diabete3)
-data4_sample$race <- factor(data4_sample$race)
-data4_sample$sex <- factor(data4_sample$sex)
-data4_sample$ageg5yr <- factor(data4_sample$ageg5yr)
-data4_sample$bmi5cat <- factor(data4_sample$bmi5cat)
-data4_sample$smoker3 <- factor(data4_sample$smoker3)
-data4_sample$addepev2 <- factor(data4_sample$addepev2)
-data4_sample$cvdcrhd4 <- factor(data4_sample$cvdcrhd4)
-data4_sample$chckidny <- factor(data4_sample$chckidny)
-data4_sample$totinda <- factor(data4_sample$totinda)
+prop.table(table(train$diabete3))
 
-train <- data4_sample %>% 
-  dplyr::sample_frac(0.7)
-test  <- dplyr::anti_join(data4_sample, train, by = 'personid')
-## Imputing would be nice but doesn't make a lot of sense given the variables we've selected because the most missing var is bmi and it is only at 6%
-## General rule of thumb is: Imputation works best when many variables are missing in small proportions such that a complete case analysis might render 60-30% completeness, 
-## but each variable is perhaps only missing 10% of its values. Because we dont meet that threshold, we will just drop all missing values 
-
-## But that means we can start modeling! 
-
+# Creating test sample-- still need to create a racially representative sample here as well before testing the model we created
+test  <- dplyr::anti_join(data4_sample, train, by = 'personid') %>%
+  group_by(race) %>%
+  mutate(Freq=n()) %>%
+  mutate(perc_total_respondents = Freq/3808*100) %>%
+  mutate(perc_population = case_when(race == 1 ~  77.5,
+                                     race == 2 ~ 13.2,
+                                     race == 3 ~ 1.2, 
+                                     race == 4 ~ 5.4, 
+                                     race == 5 ~ 0.2, 
+                                     race == 7 ~ 2.5, 
+                         TRUE~15.3)) %>%
+  ## Used https://www.census.gov/content/dam/Census/library/publications/2015/demo/p25-1143.pdf page 9
+  ## subtracted 2.1 from the hispanic because we have 17.4 percent hispanic and that is not ONLY hispanic
+  mutate(race_weight = perc_population/perc_total_respondents) %>%
+  select(-c(perc_population, perc_total_respondents, Freq)) %>%
+  ungroup()
+prop.table(table(test$diabete3))
 ```
-# Logistic Regression
-```{r,results='hide'}
-mylogit <- glm(diabete3 ~.-race_weight, data = train, family = binomial(link = "logit"), 
-               weights = race_weight)
+# Now that the data is split, we will create samples for both over and under sampled data 
+```{r, results='hide'}
+# Try oversampling first 
+data_balanced_over_train <- ovun.sample(diabete3 ~ ., data = train, method = "over")$data
+# We replicate the observations from minority class (individuals with diabetes) to balance the data
+prop.table(table(data_balanced_over_train$diabete3))
+
+# Now undersampling  
+data_balanced_under_train <- ovun.sample(diabete3 ~ ., data = train, method = "under")$data
+# We reduce the number of observations from majority class (individuals without diabetes) to balance the data 
+prop.table(table(data_balanced_under_train$diabete3))
+```
+# Section 4: Deploying the logit model 
+## Now that we have the following: 
+### Clean data
+### Training/test sets,
+## Non-sampled, Over-sampled, and Under-sampled datasets. 
+## We can use a logit model to predict if someone will be diagnosed with diabetes. Start with the non-sampled data.
+## Run the regression and examine the results 
+```{r, results='hide'}
+mylogit <- glm(diabete3 ~.-personid-race_weight, data = train, family = binomial(link = "logit"), weights = race_weight)
+
+anova_logit <- anova(mylogit, test="Chisq")
+# Use a chi-squared test because we have a lot of categorical and ordinal variables. The p values we have in the regression output correspond to individual Wald tests, but those p values do not tell us if the entire categorical/ordinal variable) explains the probability of getting diabetes. We have to test the coefficients together, so we perform a deviance goodness of fit test. 
+```
+# View regression output
+```{r}
 summary(mylogit)
-anova(mylogit, test="Chisq")
-# Got the coefficients! Use them on the test set now
-# Make predictions
+
+anova_logit
+# How to interpret this test: rejecting the null means the reduction in deviance is larger than one would expect if a variable did not explain anything about the outcome
+```
+## Make predictions using test data
+```{r, results='hide'}
 probabilities <- mylogit %>% predict(test, type = "response")
-predicted.classes <- ifelse(probabilities > 0.5, 1, 0)
-# Take these and append as columns to the test dataframe 
-predicted_classes_logit <- as.data.frame(predicted.classes)
+# The result is continuous values of probabilities of diabetes occurrence, but we are interested in predicting if someone will have diabetes or not. If anyone has a probability above 50%, we assume that they will be diagnosed with diabetes.
+predicted_classes <- ifelse(probabilities > 0.5, 1, 0)
+# Take these predictions and append as a column to the test dataframe 
+# Do do that, we must first converting predicted classes to a dataframe
+predicted_classes_logit <- as.data.frame(predicted_classes)
 test_predicted_logit <- cbind(predicted_classes_logit, test) 
-logitconfusionmatrix <- confusionMatrix(data=as.factor(test_predicted_logit$predicted.classes), reference=as.factor(test_predicted_logit$diabete3))
-
-## Creating ROC curve 
-# create roc curve
+```
+## Evaluate the model by creating a confusion matrix 
+```{r, results='hide'}
+logitconfusionmatrix <-confusionMatrix(data=as.factor(test_predicted_logit$predicted_classes), reference=as.factor(test_predicted_logit$diabete3))
+```
+```{r}
+logitconfusionmatrix
+```
+## Create ROC Curve to calculate the performance of the classification model
+```{r}
 roc_object <- roc(test$diabete3, probabilities)
-# calculate area under curve
-auc_logit <- auc(roc_object) ## 0.762
+# Calculate area under curve, the closer this is to 1 the more useful the model is
+auc_logit <- auc(roc_object) 
+auc_logit
+```
+# Logistic Regression using Oversampled Data 
+## Run the regression and examine the results 
+```{r, results='hide'}
+mylogit_oversample <- glm(diabete3 ~.-race_weight-personid, data = data_balanced_over_train, family = binomial(link = "logit"), weights = race_weight)
+anova_logit_over <- anova(mylogit_oversample, test="Chisq")
+```
+# View regression output
+```{r}
+summary(mylogit_oversample)
 
+anova_logit_over
 ```
-```{r,results='hide'}
+## Make predictions using test data
+```{r, results='hide'}
+probabilities_logit_over <- mylogit_oversample %>% predict(test, type = "response")
+predicted_classes_over <- ifelse(probabilities_logit_over > 0.5, 1, 0)
+# Take these and append as columns to the test dataframe 
+predicted_classes_logit_over <- as.data.frame(predicted_classes_over)
+test_predicted_logit_over <- cbind(predicted_classes_logit_over, test) 
 ```
+## Evaluate the model by creating a confusion matrix 
+```{r, results='hide'}
+logitconfusionmatrix_over <- confusionMatrix(data=as.factor(test_predicted_logit_over$predicted_classes_over), reference=as.factor(test_predicted_logit_over$diabete3))
+```
+```{r}
+logitconfusionmatrix_over
+```
+## Create ROC Curve to calculate the performance of the classification model
+```{r}
+roc_object_over <- roc(test$diabete3, probabilities_logit_over)
+# calculate area under curve
+auc_logit_over <- auc(roc_object)
+auc_logit_over
+```
+# Logistic Regression using Undersampled Data 
+## Run the regression and examine the results 
+```{r, results='hide'}
+mylogit_undersample <- glm(diabete3 ~.-race_weight-personid, data = data_balanced_under_train, family = binomial(link = "logit"), weights = race_weight)
+anova_logit_under <- anova(mylogit_undersample, test="Chisq")
+```
+# View regression output
+```{r}
+summary(mylogit_undersample)
+
+anova_logit_under
+```
+## Make predictions using test data
+```{r, results='hide'}
+probabilities_logit_under <- mylogit_undersample %>% predict(test, type = "response")
+predicted_classes_under <- ifelse(probabilities_logit_under > 0.5, 1, 0)
+# Take these and append as columns to the test dataframe 
+predicted_classes_logit_under <- as.data.frame(predicted_classes_under)
+test_predicted_logit_under <- cbind(predicted_classes_logit_under, test) 
+```
+## Evaluate the model by creating a confusion matrix 
+```{r, results='hide'}
+logitconfusionmatrix_under <- confusionMatrix(data=as.factor(test_predicted_logit_under$predicted_classes_under),                                  reference=as.factor(test_predicted_logit_under$diabete3))
+```
+```{r}
+logitconfusionmatrix_under
+```
+## Create ROC Curve to calculate the performance of the classification model
+```{r}
+roc_object_under <- roc(test$diabete3, probabilities_logit_under)
+# calculate area under curve
+auc_logit_under <- auc(roc_object) 
+auc_logit_under
+```
+## Takeaways on sampling in logit 
+##### Overall, using the over or undersampled data doesn't lead to different enough results to prefer either one over the non-sampled data in the currently specificed model.
+##### Because the logit model initially performs well on the overfit data but not on the test data (as evidenced by low accuracy), we conclude that the oversampled model is overfit. 
+##### It is also worth noting that the usefulness of the over, under, and non-sampled models is the same. This is because changing the class ratio only affects the intercept of a standard logistic regression model. It is a monotonic transformation of the log-odds. This also represents a monotonic function of the predicted probability values. Monotonic functions preserve order, and AUC stays the same with order meaning the AUC does not change.
+##### In all of the logit models, the auc indicates that the model's ability to dsitinguish between outcomes is fair. Given that over and under sampling didn't make much of a difference, it is likely that the model itself is incorrently specified. 
+##### Given the time constraints, I chose regressors based on commonly cited empirical literature. If I had more time, I would try variations of this model with different regressors or use Mallows CP and compare confusion matrices and AUC's to see which factors are most significant. 
+
+
+
+
+

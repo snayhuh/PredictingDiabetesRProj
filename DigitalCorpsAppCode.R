@@ -14,6 +14,8 @@ library(Rcpp)
 library(randomForest)
 library(ROSE)
 library(rpart)
+library(ggcorrplot)
+
 
 
 ### Importing datasets 
@@ -25,6 +27,7 @@ ordinal <- read_csv("/Users/snerbs/Desktop/DigitalCorpsDataTest/data_ordinal.csv
 num_ord <- left_join(numeric, ordinal, "PERSONID")
 num_ord_cat <- left_join(num_ord, categorical, "PERSONID")
 
+# Run data quality checks on columns that look to be identical
 data1 <- num_ord_cat %>%
   select(starts_with("DIABET") | starts_with("MARITAL")) %>%
   mutate(DIABET3_diff = ifelse(DIABETE3.x == DIABETE3.y & 
@@ -34,14 +37,12 @@ data1 <- num_ord_cat %>%
   mutate(MARITAL_DIFF = ifelse((`MARITAL...8` == `MARITAL...23`) | 
                                  (is.na(`MARITAL...8`) & is.na(`MARITAL...23`)), 0 ,1)) 
 
-## check the difference variable 
-summary(data1$DIABET3_diff)
-summary(data1$MARITAL_DIFF)
 
 data2 <- num_ord_cat %>%
   select(-c(DIABETE3.y, `DIABETE3...2`, `DIABETE3...20`, `MARITAL...8`)) %>%
   janitor::clean_names()
 
+# Check missingness of data using vis_dat, sorts columns according to types of data
 vis_dat(data2)
 ## numadult, drvisits, mscode, and hlthcvr1 have a lot of missing values
 ## Number of adults in a household, How many times have you been to a doctor, nurse, or other health professional in the past 12 months?, 
@@ -53,12 +54,6 @@ vis_dat(data2)
 ## Looking at the weight variable 
 ## According to documentation, 9999 is refused to answer, so we can make those missing 
 sum(is.na(data2$weight2))
-## There are 50 values with missing weight 
-## Need to know if this is correlated to something else, hopefully they are not 
-## If they are, I might have to justify potentially dropping them or imputing the values 
-## Even if it is not correlated to something else then I can impute the values
-## Look at the distribution of weight 
-## Find closest matches among other columns and use the average 
 
 ## Cleaning up the weight variable-- there are exactly seven observations that are in grams as seen by sorting the data by weight
 data3 <- data2 %>%
@@ -95,8 +90,6 @@ data3 <- data2 %>%
   mutate(diabete3 = diabete3_x) %>%
   select(-c(marital_23, diabete3_x))
 
-vis_dat(data3)
-
 data3_cleanweight1 <- data3 %>%
   mutate(
     weight_correct = case_when(
@@ -105,8 +98,6 @@ data3_cleanweight1 <- data3 %>%
     )) %>%
   select(-weight2)
   
-sum(is.na(data3_cleanweight1$weight_correct))
-
 data3_cleanweight1$state <- fips(data3_cleanweight1$state, to="Abbreviation")
 
 ## Checking for unique ID's:
@@ -127,20 +118,25 @@ vis_dat(data3_cleanweight1)
 ## BUT everything is cleaned up which is nice!
 
 ## Choosing variables: 
-## Demographic 
+# Section 2: Identifying potentially relevant variables 
+## Demographic Factors
 ##### BMI- bmi5cat
 ##### Age - ageg5yr
 ##### Gender - sex
 ##### Race  - race 
 
-## Social 
+## Social Factors
 ##### Stress - menthlth
 ##### Depression - addepev2
 
-## Lifestyle 
+## Lifestyle Factors
 ##### Smoking - smoker3
 ##### Physical exercise - totinda
 ##### Sleep - sleptim1
+
+## Medical History 
+##### Diagnosed with coronary heart disease or angina  - cvdcrhd4
+##### Ever told you have kidney disease - chckidny
 
 ## It would be nice to include clinical factors such as skin thickness, blood pressure, and glucose levels 
 ## But we don't have those, so we can include chronic heart conditions - cvdcrhd4, chckidny
@@ -194,7 +190,6 @@ data4_sample$totinda <- factor(data4_sample$totinda)
 
 prop.table(table(data4_sample$diabete3))
 
-library(ggcorrplot)
 model.matrix(~0+., data=data4_sample) %>% 
   cor(use="pairwise.complete.obs") %>% 
   ggcorrplot(show.diag = F, type="lower", lab=TRUE, lab_size=2)
