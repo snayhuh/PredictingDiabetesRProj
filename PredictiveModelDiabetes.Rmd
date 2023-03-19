@@ -6,6 +6,7 @@ output: html_document
 
 ```{r setup, results='hide'}
 knitr::opts_chunk$set(echo = TRUE)
+set.seed(32)
 ### Importing libraries 
 library(dplyr, warn.conflicts = FALSE)
 library(tidyr)
@@ -24,6 +25,10 @@ library(ROSE)
 library(ggcorrplot)
 library(party)
 library(gridExtra)
+library(rpart)
+library(rpart.plot)
+library(moments)
+library(DescTools)
 ```
 # Section 1: Cleaning/EDA
 ## Importing and Merging Data 
@@ -70,7 +75,7 @@ data3 <- data2 %>%
                                  sleptim1 = c(77, 99), 
                                  menthlth = c(77, 99), 
                                  diabete3_x = c(7, 9), 
-                                 race = c(6, 9), 
+                                 race = c(9), 
                                  flushot6 = c(7, 9), 
                                  employ1 = 9, 
                                  marital_23 = 9, 
@@ -86,6 +91,8 @@ data3 <- data2 %>%
                                  decide = c(7, 9),
                                  hlthpln1 = c(7, 9), 
                                  genhlth = c(7, 9), 
+                                 ageg5yr = 14,
+                                 smoker3=9,
                                  asthma3 = c(7, 9)))%>%
   mutate(children = replace(children, children == 88, 0)) %>%
   mutate(drvisits = replace(drvisits, drvisits == 88, 0)) %>%
@@ -113,6 +120,10 @@ uniqueidcheck <- data3_cleanweight1 %>%
   mutate(duplicate_name = n()-1)
 # All ID's are unique! 
 ```
+## Checking distributions of all variables 
+```{r}
+skewness(data3_cleanweight1, na.rm = T)
+```
 ## Check missingness of data using vis_dat-- sorts columns according to types of data
 ```{r}
 vis_dat(data3_cleanweight1)
@@ -123,24 +134,21 @@ vis_dat(data3_cleanweight1)
 ```{r}
 data4 <- data3_cleanweight1 %>%
   select(-c(numadult, drvisits, mscode, income2, hlthcvr1)) %>%
-  filter(ageg5yr > 2) %>%
+  filter(ageg5yr > 3) %>%
 # The US Preventative Service Task Force recommends that screenings for diabetes should start at age 35, so we only include individuals 35 or older.  
   filter(diabete3 == 1 | diabete3 == 3) %>%
 #We are not interested in anyone with gestational diabetes or prediabetic individuals because they are not official diabetes diagnoses. Even if we were interested in keeping gestational diabetes or prediabetes as covariates, we could not use them because it is unknown of those respondents have type 2 diagnoses later. 
   mutate(diabete3 = case_when(diabete3 == 3 ~ 0, 
          TRUE ~ 1)) %>%
   na.omit()
-# After this modification, we have 3609 observations
+# After this modification, we have 3417 observations
 ```
 ## Check racial breakdown of data and assess if it is representative of nation
 ```{r}
 data4_sample <- data4 %>%
   group_by(race) %>%
   mutate(Freq=n()) %>%
-  mutate(perc_total_respondents = Freq/3808*100) %>%
-  # Compare perc_total_respondents with actual national racial breakdown using https://www.census.gov/content/dam/Census/library/publications/2015/demo/p25-1143.pdf page 9
-  # There are a disproportionate number of white respondents, which could potentially skew the sample 
-  # We use weights to fix for heteroskedasticity AFTER establishing the training and test models because the representative-ness will change based on the random sample
+  mutate(perc_total_respondents = Freq/3417*100) %>%
   ungroup()
 ```
 # The following variables are categorical or ordinal. We need to convert the following objects to factors to represent that. 
@@ -176,14 +184,22 @@ prop.table(table(data4_sample$diabete3))
 ###### The usefulness (AUC value) of the over, under, and non-sampled models would remain the same (or be very close to each other). This is because changing the class ratio only affects the intercept of a standard logistic regression model. It is a monotonic transformation of the log-odds. This also represents a monotonic function of the predicted probability values. Monotonic functions preserve order, and AUC stays the same with order meaning the AUC does not change.
 ###### With our size sample, we have more than 600 observations in our minority class. Given that we can typically fit about 1 parameter per 15 members of the minority class without overfitting, we have enough flexibility in the sample. 
 
-# Section 3.1: Model Selection: 
+```{r}
+data4_sample$cvdcrhd4 <- as.factor(data4_sample$cvdcrhd4)
+heartdisease_hist <- ggplot(data4_sample) + geom_histogram(aes(x=cvdcrhd4), stat='count')
+```
+
+## It would be nice to include clinical factors such as skin thickness, blood pressure, and glucose levels 
+## But we don't have those, so we can include chronic heart conditions - cvdcrhd4, chckidny
+## Can also proxy for some of these using sleep 
+
+# Section 3: Model Selection: 
 ## Use the Boruta algorithm to see what variables are relevant in the data. Based on the earlier visualization, we omit numadult, drvisits, mscode, income2, and hlthcvr1 because they are largely missing from the data and we will not use them as predictors because of that.
-## Boruta generally is a good 
 ```{r, results='hide'}
 boruta_data <- data4_sample %>%
   select(-c(Freq, perc_total_respondents, personid,weight_correct))
 #Omit varialbes that we don't intend on using in our model
-boruta.train <- Boruta(diabete3~., data = boruta_data)
+boruta_train <- Boruta(diabete3~., data = boruta_data)
 # Confirmed, non-tentative: The following variables are predictive and should be kept.
 # children, genhlth, ageg5yr,bmi5cat, educag, sleptim1, menthlth, race, employ1, cvdcrhd4, chckidny, useequip, addepev2, exerany2, decide, marital, sex
 # Tentative. The algorithm was indecisive about if these are predictive. It is up to us to include. 
@@ -207,32 +223,46 @@ model.matrix(~0+.-Freq-perc_total_respondents-personid-state, data=data4_sample)
 
 
 
-# Section 3.2: Look into all of the variables specified by Boruta: 
+# Section 3.1: Look into all of the variables specified by Boruta: 
 ```{r}
 children_hist <- ggplot(data4_sample, aes(x=children)) + geom_histogram()
-genhlth_hist <- ggplot(data4_sample, aes(x=genhlth)) + geom_bar()
-ageg5yr_hist <- ggplot(data4_sample, aes(x=ageg5yr)) + geom_bar()
-bmi5cat_hist <- ggplot(data4_sample, aes(x=bmi5cat)) + geom_bar()
+genhlth_hist <- ggplot(data4_sample, aes(x=genhlth)) + geom_bar() + labs(y="Count", x = "Gen. Health Category")
+ageg5yr_hist <- ggplot(data4_sample, aes(x=ageg5yr)) + geom_bar() + labs(y="Count", x = "Age Category")
+bmi5cat_hist <- ggplot(data4_sample, aes(x=bmi5cat)) + geom_bar() + labs(y="Count", x = "BMI Category")
 checkup_hist <- ggplot(data4_sample, aes(x=checkup1)) + geom_bar()
 educag_hist <- ggplot(data4_sample, aes(x=educag)) + geom_bar()+
   scale_x_discrete(breaks=c(1, 2, 3, 4, 5, 6, 7, 8, 9))
-sleptim_hist <- ggplot(data4_sample, aes(x=sleptim1)) + geom_histogram()
-menthlth_hist <- ggplot(data4_sample, aes(x=menthlth)) + geom_histogram(bins=45)
+sleptim_hist <- ggplot(data4_sample, aes(x=sleptim1)) + geom_histogram(bins=30) + labs(y="Count", x = "Hours Slept/24 Hours")
+menthlth_hist <- ggplot(data4_sample, aes(x=menthlth)) + geom_histogram(bins=45) + labs(y="Count", x = "# Poor Mental Health Days in the Past Month")
 employ1_hist <- ggplot(data4_sample, aes(x=employ1)) + geom_bar()
+race_hist <- ggplot(data4_sample, aes(x=race)) + geom_bar() + labs(y="Count", x = "Race")
 cvdcrhd4_table <- table(data4_sample$cvdcrhd4)
+cvdcrhd4_hist <- ggplot(data4_sample) + geom_bar(aes(x=cvdcrhd4)) + labs(y="Count", x = "Chronic Heart Disease? (Y/N")
 chckidny_table <- table(data4_sample$chckidny)
+chckidny_hist <- ggplot(data4_sample) + geom_bar(aes(x=chckidny)) + labs(y="Count", x = "Kidney Disease? (Y/N")
 useequip_table <- table(data4_sample$useequip)
 addepev2_table <- table(data4_sample$addepev2)
+addepev2_hist <- ggplot(data4_sample) + geom_bar(aes(x=addepev2)) + labs(y="Count", x = "Depressive Disorder? (Y/N)")
 exerany_table <- table(data4_sample$exerany2)
+exerany_hist <- ggplot(data4_sample) + geom_bar(aes(x=exerany2)) + labs(y="Count", x = "Exercise in the Past Month (Y/N)")
 decide_table <- table(data4_sample$decide)
-marital_hist <- ggplot(data4_sample, aes(x=marital)) + geom_bar()
+marital_hist <- ggplot(data4_sample, aes(x=marital)) + geom_bar() + labs(y="Count", x = "Marital Status")
 sex_table <- table(data4_sample$sex)
-smoker3_hist <- ggplot(data4_sample, aes(x=smoker3)) + geom_bar()
-totinda_table <- table(data4_sample$totinda)
+smoker3_hist <- ggplot(data4_sample, aes(x=smoker3)) + geom_bar() + labs(y="Count", x = "Smoker Status")
+sex_hist <- ggplot(data4_sample) + geom_bar(aes(x=sex)) + labs(y="Count", x = "Sex")
 
+sd(data4_sample$menthlth)
+mean(data4_sample$menthlth)
 
-grid.arrange(children_hist, genhlth_hist, ageg5yr_hist, bmi5cat_hist, checkup_hist, educag_hist, sleptim_hist, menthlth_hist,employ1_hist, marital_hist, smoker3_hist, ncol=3, nrow =4)
-
+relevant_vars <- grid.arrange(bmi5cat_hist, ageg5yr_hist, race_hist, sex_hist, menthlth_hist, addepev2_hist,
+                              sleptim_hist, exerany_hist, smoker3_hist, cvdcrhd4_hist, chckidny_hist, 
+                              ncol=4, nrow =3)
+ggsave("/Users/snerbs/Desktop/GitHub/DigitalCorpsApp/relevant_vars", 
+       relevant_vars, 
+       device = png,
+       width=10,
+       height=10
+)
 ```
 
 
@@ -243,43 +273,15 @@ grid.arrange(children_hist, genhlth_hist, ageg5yr_hist, bmi5cat_hist, checkup_hi
 
 
 
-# Section 3.3: Split the data into training and test sets before adjusting the samples. 
+# Section 3.2: Split the data into training and test sets before adjusting the samples. 
 ## We use the training data to test and validate the model then treat the test dataset as new data to evaluate how effective the model is. We will adjust the racial representative-ness of the sample in the training data. When we split the data into training and test sets, the data is randomly divided, meaning the training and/or test sets may have the same racial split as the lar
 ```{r}
-train <- data4_sample %>% 
-  dplyr::sample_frac(0.75) %>%
-  group_by(race) %>%
-  mutate(perc_population = case_when(race == 1 ~  77.5,
-                                     race == 2 ~ 13.2,
-                                     race == 3 ~ 1.2, 
-                                     race == 4 ~ 5.4, 
-                                     race == 5 ~ 0.2, 
-                                     race == 7 ~ 2.5, 
-                         TRUE~15.3)) %>%
-  ## Used https://www.census.gov/content/dam/Census/library/publications/2015/demo/p25-1143.pdf page 9
-  ## subtracted 2.1 from the hispanic because we have 17.4 percent hispanic and that is not ONLY hispanic
-  mutate(race_weight = perc_population/perc_total_respondents) %>%
-  select(-c(perc_population, perc_total_respondents, Freq)) %>%
-  ungroup()
+train <- data4_sample %>%
+  dplyr::sample_frac(0.75) 
 prop.table(table(train$diabete3))
 
 # Creating test sample-- still need to create a racially representative sample here as well before testing the model we created
-test  <- dplyr::anti_join(data4_sample, train, by = 'personid') %>%
-  group_by(race) %>%
-  mutate(Freq=n()) %>%
-  mutate(perc_total_respondents = Freq/3808*100) %>%
-  mutate(perc_population = case_when(race == 1 ~  77.5,
-                                     race == 2 ~ 13.2,
-                                     race == 3 ~ 1.2, 
-                                     race == 4 ~ 5.4, 
-                                     race == 5 ~ 0.2, 
-                                     race == 7 ~ 2.5, 
-                         TRUE~15.3)) %>%
-  # Used https://www.census.gov/content/dam/Census/library/publications/2015/demo/p25-1143.pdf page 9
-  # subtracted 2.1 from the hispanic because we have 17.4 percent hispanic and that is not ONLY hispanic
-  mutate(race_weight = perc_population/perc_total_respondents) %>%
-  select(-c(perc_population, perc_total_respondents, Freq)) %>%
-  ungroup()
+test  <- dplyr::anti_join(data4_sample, train, by = 'personid')
 prop.table(table(test$diabete3))
 ```
 # Section 4: Deploying the logit model 
@@ -289,7 +291,7 @@ prop.table(table(test$diabete3))
 ## We can use a logit model to predict if someone will be diagnosed with diabetes.
 ## Run the regression and examine the results 
 ```{r, results='hide'}
-mylogit <- glm(diabete3 ~children+genhlth+ageg5yr+bmi5cat+checkup1+educag+sleptim1+menthlth+race+employ1+cvdcrhd4+chckidny+useequip+addepev2+exerany2+decide+marital+sex+smoker3, data = train, family = binomial(link = "logit"), weights = race_weight)
+mylogit <- glm(diabete3 ~children+genhlth+ageg5yr+bmi5cat+checkup1+educag+sleptim1+menthlth+race+employ1+cvdcrhd4+chckidny+useequip+addepev2+exerany2+decide+marital+sex+smoker3, data = train, family = binomial(link = "logit"))
 
 anova_logit <- anova(mylogit, test="Chisq")
 # Use a chi-squared test because we have a lot of categorical and ordinal variables. The p values we have in the regression output correspond to individual Wald tests, but those p values do not tell us if the entire categorical/ordinal variable) explains the probability of getting diabetes. We have to test the coefficients together, so we perform a deviance goodness of fit test. 
@@ -312,23 +314,26 @@ predicted_classes <- ifelse(probabilities > 0.5, 1, 0)
 # Take the predictions and append as a column to the test dataframe to create a confusion matrix
 # Do do that, we must first converting predicted classes to a dataframe
 predicted_classes_logit <- as.data.frame(predicted_classes)
-test_predicted_logit <- cbind(predicted_classes_logit, test) 
+test_predicted_logit <- cbind(predicted_classes_logit, test)
 logitconfusionmatrix <-confusionMatrix(data=as.factor(test_predicted_logit$predicted_classes), reference=as.factor(test_predicted_logit$diabete3))
 ```
 ```{r}
 logitconfusionmatrix
+BrierScore(mylogit)
 ```
 ## Section 4.3: Create ROC Curve to calculate the performance of the classification model
 ```{r}
-roc_object <- roc(test$diabete3, probabilities)
-# Calculate area under curve, the closer this is to 1 the more useful the model is
-auc_logit <- auc(roc_object) 
+# create roc curve
+roc_logit <- roc(test_predicted_logit$diabete3, test_predicted_logit$predicted_classes)
+# calculate area under curve
+auc_logit <- auc(roc_logit)
 auc_logit
 ```
+
 # Section 5: Decision trees 
 ```{r}
-decisiontree <- ctree(diabete3 ~children+genhlth+ageg5yr+bmi5cat+checkup1+educag+sleptim1+menthlth+race+employ1+cvdcrhd4+chckidny+useequip+addepev2+exerany2+decide+marital+sex+smoker3, data = train)
-plot(decisiontree)
+decisiontree <- rpart(diabete3 ~children+genhlth+ageg5yr+bmi5cat+checkup1+educag+sleptim1+menthlth+race+employ1+cvdcrhd4+chckidny+useequip+addepev2+exerany2+decide+marital+sex+smoker3, data = train, method='class')
+rpart.plot(decisiontree)
 ```
 
 
@@ -347,7 +352,7 @@ plot(decisiontree)
 
 ## Section 5.1: Make predictions using test data
 ```{r}
-predict_model<-predict(decisiontree, test)
+predict_model<-predict(decisiontree, test, type='class')
 ```
 ## Section 5.2: Evaluate the model by creating a confusion matrix 
 ```{r}
@@ -412,6 +417,41 @@ roc_object_randomforests <- roc(test$diabete3, pred_randomforest_test)
 auc_randomforests <- auc(roc_object_randomforests)
 auc_randomforests
 ```
+# Section 7: Applying the logit model to all of the data  
+```{r}
+mylogit_final <- glm(diabete3 ~children+genhlth+ageg5yr+bmi5cat+checkup1+educag+sleptim1+menthlth+race+employ1+cvdcrhd4+chckidny+useequip+addepev2+exerany2+decide+marital+sex+smoker3, data = data4_sample, family = binomial(link = "logit"))
 
+anova_logit_final <- anova(mylogit, test="Chisq")
+```
+## View regression output
+```{r}
+summary(mylogit_final)
 
-
+anova_logit_final
+# How to interpret this test: rejecting the null means the reduction in deviance is larger than one would expect if a variable did not explain anything about the outcome
+```
+## Section 7.1: Make predictions using test data
+```{r}
+probabilities_final <- mylogit_final %>% predict(data4_sample, type = "response")
+predicted_classes_final <- ifelse(probabilities_final > 0.5, 1, 0)
+```
+## Section 4.2: Evaluate the model by creating a confusion matrix 
+```{r, }
+# Take the predictions and append as a column to the test dataframe to create a confusion matrix
+# Do do that, we must first converting predicted classes to a dataframe
+predicted_classes_logit_final <- as.data.frame(predicted_classes_final)
+final_predicted_logit <- cbind(predicted_classes_logit_final, data4_sample)
+logitconfusionmatrix_final <-confusionMatrix(data=as.factor(final_predicted_logit$predicted_classes_final), reference=as.factor(final_predicted_logit$diabete3))
+```
+```{r}
+logitconfusionmatrix
+BrierScore(mylogit)
+```
+## Section 7.3: Create ROC Curve to calculate the performance of the classification model
+```{r}
+# create roc curve
+roc_logit_final <- roc(final_predicted_logit$diabete3, final_predicted_logit$predicted_classes_final)
+# calculate area under curve
+auc_logit_final <- auc(roc_logit_final)
+auc_logit_final
+```
